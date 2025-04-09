@@ -36,16 +36,6 @@ The project exposes a REST API via AWS API Gateway, allowing clients to submit o
 
 The infrastructure can be easily deployed using the provided CloudFormation template (`template.yaml`). Configure the required parameters such as S3 bucket names and keys for the ZIP packages containing Lambda function code.
 
-## Future Improvements
-
-- Implement a Dead-Letter Queue (DLQ) for messages that fail to be processed.
-- Advanced monitoring with CloudWatch Alarms and Dashboards.
-- Improved exception handling and detailed logs for easier debugging.
-
----
-
-Built with :heart: using AWS Serverless technologies.
-
 ---
 
 # Processamento de Pedidos com AWS Serverless
@@ -86,13 +76,4 @@ O projeto expõe uma API REST via AWS API Gateway, permitindo a recepção de pe
 
 A infraestrutura pode ser facilmente provisionada utilizando o template CloudFormation fornecido (`template.yaml`). Configure os parâmetros necessários como nomes do bucket S3 e chaves para os pacotes ZIP contendo o código das funções Lambda.
 
-## Melhorias Futuras
-
-- Implementar uma fila secundária (DLQ) para tratamento de mensagens que não puderam ser processadas.
-- Monitoramento avançado com CloudWatch Alarms e Dashboards para análise de performance.
-- Melhorias no tratamento de exceções e logs detalhados para facilitar debugging.
-
 ---
-
-Desenvolvido com :heart: utilizando tecnologias AWS Serverless.
-
