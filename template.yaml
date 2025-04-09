@@ -1,0 +1,201 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+    Stack para processamento de pedidos utilizando API Gateway, Lambda, DynamoDB, SQS e SNS.
+    As funções Lambda utilizam código empacotado separadamente e armazenado em um bucket S3.
+
+Parameters:
+    CodeS3Bucket:
+        Type: String
+        Description: Nome do bucket S3 onde os pacotes Lambda estão armazenados.
+
+    ValidacaoS3Key:
+        Type: String
+        Description: S3 Key do pacote ZIP da função Lambda de validação.
+
+    ProcessamentoS3Key:
+        Type: String
+        Description: S3 Key do pacote ZIP da função Lambda de processamento.
+
+    LambdaRuntime:
+        Type: String
+        Default: python3.8
+        AllowedValues:
+            - python3.7
+            - python3.8
+            - python3.9
+        Description: Runtime utilizado pelas funções Lambda.
+
+Resources:
+    OrdersTable:
+        Type: AWS::DynamoDB::Table
+        Properties:
+            TableName: Orders
+            AttributeDefinitions:
+                - AttributeName: orderId
+                  AttributeType: S
+            KeySchema:
+                - AttributeName: orderId
+                  KeyType: HASH
+            BillingMode: PAY_PER_REQUEST
+
+    SQSQueue:
+        Type: AWS::SQS::Queue
+        Properties:
+            QueueName: PedidosQueue
+
+    SNSTopic:
+        Type: AWS::SNS::Topic
+        Properties:
+            TopicName: PedidosNotificacoes
+
+    LambdaValidacaoRole:
+        Type: AWS::IAM::Role
+        Properties:
+            RoleName: LambdaValidacaoRole
+            AssumeRolePolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                    - Effect: Allow
+                      Principal:
+                          Service: lambda.amazonaws.com
+                      Action: sts:AssumeRole
+            Policies:
+                - PolicyName: LambdaValidacaoPolicy
+                  PolicyDocument:
+                      Version: '2012-10-17'
+                      Statement:
+                          - Effect: Allow
+                            Action:
+                                - dynamodb:PutItem
+                            Resource: !GetAtt OrdersTable.Arn
+                          - Effect: Allow
+                            Action:
+                                - sqs:SendMessage
+                            Resource: !GetAtt SQSQueue.Arn
+                          - Effect: Allow
+                            Action:
+                                - logs:CreateLogGroup
+                                - logs:CreateLogStream
+                                - logs:PutLogEvents
+                            Resource: arn:aws:logs:*:*:*
+
+    LambdaProcessamentoRole:
+        Type: AWS::IAM::Role
+        Properties:
+            RoleName: LambdaProcessamentoRole
+            AssumeRolePolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                    - Effect: Allow
+                      Principal:
+                          Service: lambda.amazonaws.com
+                      Action: sts:AssumeRole
+            Policies:
+                - PolicyName: LambdaProcessamentoPolicy
+                  PolicyDocument:
+                      Version: '2012-10-17'
+                      Statement:
+                          - Effect: Allow
+                            Action:
+                                - dynamodb:UpdateItem
+                            Resource: !GetAtt OrdersTable.Arn
+                          - Effect: Allow
+                            Action:
+                                - sns:Publish
+                            Resource: !Ref SNSTopic
+                          - Effect: Allow
+                            Action:
+                                - logs:CreateLogGroup
+                                - logs:CreateLogStream
+                                - logs:PutLogEvents
+                            Resource: arn:aws:logs:*:*:*
+                          - Effect: Allow
+                            Action:
+                                - sqs:ReceiveMessage
+                                - sqs:DeleteMessage
+                                - sqs:ChangeMessageVisibility
+                                - sqs:GetQueueAttributes
+                            Resource: !GetAtt SQSQueue.Arn
+
+    LambdaValidacao:
+        Type: AWS::Lambda::Function
+        Properties:
+            FunctionName: LambdaValidacaoArmazenamento
+            Handler: lambda_validacao.lambda_handler
+            Runtime: !Ref LambdaRuntime
+            Role: !GetAtt LambdaValidacaoRole.Arn
+            Code:
+                S3Bucket: !Ref CodeS3Bucket
+                S3Key: !Ref ValidacaoS3Key
+            Environment:
+                Variables:
+                    DYNAMODB_TABLE: Orders
+                    SQS_QUEUE_URL: !Ref SQSQueue
+
+    LambdaProcessamento:
+        Type: AWS::Lambda::Function
+        Properties:
+            FunctionName: LambdaProcessamentoPedido
+            Handler: lambda_processamento.lambda_handler
+            Runtime: !Ref LambdaRuntime
+            Role: !GetAtt LambdaProcessamentoRole.Arn
+            Code:
+                S3Bucket: !Ref CodeS3Bucket
+                S3Key: !Ref ProcessamentoS3Key
+            Environment:
+                Variables:
+                    DYNAMODB_TABLE: Orders
+                    SNS_TOPIC_ARN: !Ref SNSTopic
+
+    ApiGatewayRestApi:
+        Type: AWS::ApiGateway::RestApi
+        Properties:
+            Name: PedidosApi
+            Description: API para recebimento de pedidos
+
+    ApiGatewayResource:
+        Type: AWS::ApiGateway::Resource
+        Properties:
+            ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+            PathPart: pedidos
+            RestApiId: !Ref ApiGatewayRestApi
+
+    ApiGatewayMethod:
+        Type: AWS::ApiGateway::Method
+        Properties:
+            RestApiId: !Ref ApiGatewayRestApi
+            ResourceId: !Ref ApiGatewayResource
+            HttpMethod: POST
+            AuthorizationType: NONE
+            Integration:
+                IntegrationHttpMethod: POST
+                Type: AWS_PROXY
+                Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaValidacao.Arn}/invocations
+
+    LambdaPermissionApiGateway:
+        Type: AWS::Lambda::Permission
+        Properties:
+            FunctionName: !Ref LambdaValidacao
+            Action: lambda:InvokeFunction
+            Principal: apigateway.amazonaws.com
+            SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/POST/pedidos
+
+    ApiGatewayDeployment:
+        Type: AWS::ApiGateway::Deployment
+        DependsOn: ApiGatewayMethod
+        Properties:
+            RestApiId: !Ref ApiGatewayRestApi
+            StageName: prod
+
+    SQSEventSourceMapping:
+        Type: AWS::Lambda::EventSourceMapping
+        Properties:
+            BatchSize: 1
+            EventSourceArn: !GetAtt SQSQueue.Arn
+            FunctionName: !Ref LambdaProcessamento
+            Enabled: true
+
+Outputs:
+    ApiUrl:
+        Description: 'Endpoint da API para envio de pedidos'
+        Value: !Sub 'https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/prod/pedidos'
